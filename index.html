@@ -319,18 +319,29 @@ async function loadPdf(file) {
       const tc = await page.getTextContent();
       for (const it of tc.items) {
         if (!it.str || !it.str.trim()) continue;
-        // 把 PDF 座標經 viewport 轉到 canvas 座標
+        // 完整 transform: PDF text 座標 -> canvas 座標
         const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
-        const fontH = Math.hypot(tx[2], tx[3]) || Math.abs(tx[3]) || 12;
-        const left = tx[4];
-        const bottom = tx[5];
-        const top = bottom - fontH;
-        const right = left + (it.width || 1) * vp.scale;
+        const w = it.width || 0;
+        // 字高: 用 transform 矩陣 column 2 的長度算 (處理旋轉)
+        const h = it.height ||
+          Math.hypot(it.transform[2], it.transform[3]) || 1;
+        // 計算 4 個角在 canvas 上的位置 (PDF 文字座標: 基線在 y=0,
+        // 字頂在 y=h, 字寬 0~w)
+        function tp(x, y) {
+          return [tx[0]*x + tx[2]*y + tx[4],
+                  tx[1]*x + tx[3]*y + tx[5]];
+        }
+        const corners = [tp(0,0), tp(w,0), tp(0,h), tp(w,h)];
+        const xs = corners.map(c => c[0]);
+        const ys = corners.map(c => c[1]);
+        const left = Math.min(...xs);
+        const right = Math.max(...xs);
+        const top = Math.min(...ys);
+        const bottom = Math.max(...ys);
+        // 偵測是否旋轉 (90°): transform 矩陣 [0] 跟 [3] 接近 0
+        const isRotated = Math.abs(tx[0]) < Math.abs(tx[1]);
         textItems.push({
-          str: it.str,
-          left, top, right, bottom,
-          // for vertical text detection
-          isVertical: Math.abs(tx[1]) > Math.abs(tx[0])
+          str: it.str, left, top, right, bottom, isRotated
         });
       }
     } catch(e) { console.warn("text extract failed:", e); }
@@ -577,23 +588,38 @@ function extractFromTextLayer(marker) {
 
   // 找跟 best 同一行 (top 差距 < 字高) 且左右距離近的其他片段一起串
   const lineHeight = Math.max(8, best.t.bottom - best.t.top);
+  // 處理垂直文字: 同一行可能是「同一欄」
+  const isVert = best.t.isRotated;
   const sameLine = cands.filter(c => {
     if (c === best) return false;
-    // 基線必須非常接近 (同一行)
-    const baseDiff = Math.abs(c.t.bottom - best.t.bottom);
-    if (baseDiff > lineHeight * 0.5) return false;
-    // 必須有數字才算尺寸碎片
-    if (!/\d/.test(c.t.str)) return false;
-    // 水平要相鄰 (尺寸主體後緊接 ±0.0XX 那種)
-    const horizGap = Math.min(
-      Math.abs(c.t.left - best.t.right),
-      Math.abs(c.t.right - best.t.left)
-    );
-    return horizGap < lineHeight * 1.5;
+    if (!/\d/.test(c.t.str)) return false;  // 必須有數字
+    if (isVert) {
+      // 垂直文字: 同欄 = 左右相近, 上下相鄰
+      const xDiff = Math.abs(c.t.left - best.t.left);
+      if (xDiff > lineHeight) return false;
+      const yGap = Math.min(
+        Math.abs(c.t.top - best.t.bottom),
+        Math.abs(c.t.bottom - best.t.top)
+      );
+      return yGap < lineHeight * 2;
+    } else {
+      // 水平文字: 同行 = 上下相近, 左右相鄰
+      const baseDiff = Math.abs(c.t.bottom - best.t.bottom);
+      if (baseDiff > lineHeight * 0.5) return false;
+      const horizGap = Math.min(
+        Math.abs(c.t.left - best.t.right),
+        Math.abs(c.t.right - best.t.left)
+      );
+      return horizGap < lineHeight * 1.5;
+    }
   });
 
   const all = [best, ...sameLine];
-  all.sort((a,b) => a.t.left - b.t.left);
+  if (isVert) {
+    all.sort((a,b) => a.t.top - b.t.top);
+  } else {
+    all.sort((a,b) => a.t.left - b.t.left);
+  }
   return all.map(c => c.t.str).join("").replace(/\s+/g," ").trim();
 }
 
