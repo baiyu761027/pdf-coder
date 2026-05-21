@@ -319,27 +319,28 @@ async function loadPdf(file) {
       const tc = await page.getTextContent();
       for (const it of tc.items) {
         if (!it.str || !it.str.trim()) continue;
-        // 完整 transform: PDF text 座標 -> canvas 座標
+        // tx 為「完整 text-local -> canvas」轉換矩陣
         const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
-        const w = it.width || 0;
-        // 字高: 用 transform 矩陣 column 2 的長度算 (處理旋轉)
-        const h = it.height ||
-          Math.hypot(it.transform[2], it.transform[3]) || 1;
-        // 計算 4 個角在 canvas 上的位置 (PDF 文字座標: 基線在 y=0,
-        // 字頂在 y=h, 字寬 0~w)
-        function tp(x, y) {
-          return [tx[0]*x + tx[2]*y + tx[4],
-                  tx[1]*x + tx[3]*y + tx[5]];
+        const angle = Math.atan2(tx[1], tx[0]);      // 旋轉角度
+        const fontH = Math.hypot(tx[2], tx[3]) || 12;
+        // 文字寬度在 canvas 上 (沿基線方向)
+        const widthCanvas = (it.width || 1) * vp.scale;
+        // 算「未旋轉時」4 個角 (基線左=(0,0), 文字朝 +x, 字高朝 -y)
+        const localCorners = [
+          [0, 0], [widthCanvas, 0],
+          [0, -fontH], [widthCanvas, -fontH]
+        ];
+        const cosA = Math.cos(angle), sinA = Math.sin(angle);
+        const xs = [], ys = [];
+        for (const [x, y] of localCorners) {
+          xs.push(x*cosA - y*sinA + tx[4]);
+          ys.push(x*sinA + y*cosA + tx[5]);
         }
-        const corners = [tp(0,0), tp(w,0), tp(0,h), tp(w,h)];
-        const xs = corners.map(c => c[0]);
-        const ys = corners.map(c => c[1]);
         const left = Math.min(...xs);
         const right = Math.max(...xs);
         const top = Math.min(...ys);
         const bottom = Math.max(...ys);
-        // 偵測是否旋轉 (90°): transform 矩陣 [0] 跟 [3] 接近 0
-        const isRotated = Math.abs(tx[0]) < Math.abs(tx[1]);
+        const isRotated = Math.abs(angle) > 0.1;
         textItems.push({
           str: it.str, left, top, right, bottom, isRotated
         });
