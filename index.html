@@ -85,14 +85,14 @@
 <body>
 <div class="app">
   <header>
-    <h1>PDF / 圖檔框選編碼工具 — PaddleOCR 瀏覽器版</h1>
+    <h1>PDF / 圖檔框選編碼工具 — 瀏覽器版</h1>
     <div class="status" id="statusBar">尚未載入檔案</div>
   </header>
 
   <aside>
     <div class="section">
       <div class="section-title">OCR 狀態</div>
-      <div class="ocr-status loading" id="ocrStatus">PaddleOCR 載入中...(首次需網路下載約15MB)</div>
+      <div class="ocr-status loading" id="ocrStatus">Tesseract OCR 載入中...(首次需網路下載約10MB)</div>
     </div>
 
     <div class="section">
@@ -168,8 +168,8 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
-<script type="module">
-import { PaddleOCR } from 'https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.3.2/+esm';
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+<script>
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -187,19 +187,28 @@ const canvas = $("pdfCanvas"), ctx = canvas.getContext("2d");
 async function initOcr() {
   const s = $("ocrStatus");
   try {
-    s.textContent = "下載 PaddleOCR 引擎中...(約25MB)";
-    state.ocrEngine = await PaddleOCR.create({
-      lang: "en",
-      ocrVersion: "PP-OCRv4",
-      ortOptions: { backend: "wasm" }
+    s.textContent = "下載 Tesseract 模型 (約 10MB)...";
+    state.ocrEngine = await Tesseract.createWorker("eng", 1, {
+      logger: m => {
+        if (m.status === "downloading tesseract core") s.textContent = "下載 OCR 引擎...";
+        else if (m.status === "loading tesseract core") s.textContent = "初始化 OCR 引擎...";
+        else if (m.status === "downloading language traineddata") s.textContent = `下載語言模型 ${Math.round(m.progress*100)}%`;
+        else if (m.status === "initializing api") s.textContent = "啟動 API...";
+      }
     });
+    try {
+      await state.ocrEngine.setParameters({
+        tessedit_pageseg_mode: "7",  // 單行模式 - 適合 dimension 文字
+        tessedit_char_whitelist: "0123456789.±+-ØMINAXREFTYPmaxminreftyp "
+      });
+    } catch(_) {}
     state.ocrReady = true;
     s.className = "ocr-status ready";
-    s.textContent = "✓ PaddleOCR 就緒";
+    s.textContent = "✓ Tesseract OCR 就緒";
   } catch (e) {
     s.className = "ocr-status error";
     s.textContent = "OCR 載入失敗: " + (e.message || e);
-    console.error(e);
+    console.error("OCR init error:", e);
   }
 }
 initOcr();
@@ -366,15 +375,51 @@ canvas.addEventListener("mouseup", async e => {
 });
 
 // ---- OCR ----
-async function cropToBlob(marker) {
+// Otsu 二值化前處理 — 大幅提升技術圖小字辨識率
+function preprocessForOcr(c) {
+  const w = c.width, h = c.height;
+  const cx = c.getContext("2d");
+  const img = cx.getImageData(0,0,w,h);
+  const d = img.data;
+  const hist = new Uint32Array(256);
+  const lums = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+    const L = (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) | 0;
+    lums[j] = L; hist[L]++;
+  }
+  const total = w * h;
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, varMax = 0, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > varMax) { varMax = v; threshold = t; }
+  }
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+    const v = lums[j] < threshold ? 0 : 255;
+    d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
+  }
+  cx.putImageData(img, 0, 0);
+}
+
+async function ocrMarker(marker) {
+  if (!state.ocrReady) {
+    marker.ocrText = "(OCR 尚未載入)"; return;
+  }
   const p = state.pages[marker.page];
   const sx = Math.max(0, Math.round(marker.bx));
   const sy = Math.max(0, Math.round(marker.by));
   const sw = Math.min(p.width-sx, Math.round(marker.bw));
   const sh = Math.min(p.height-sy, Math.round(marker.bh));
-  if (sw < 3 || sh < 3) return null;
-  // Scale up 2x for better OCR
-  const scale = 2;
+  if (sw < 3 || sh < 3) return;
+  // 3× 升頻 + 二值化
+  const scale = 3;
   const c = document.createElement("canvas");
   c.width = sw * scale; c.height = sh * scale;
   const cx = c.getContext("2d");
@@ -384,22 +429,13 @@ async function cropToBlob(marker) {
   tmp.width = p.width; tmp.height = p.height;
   tmp.getContext("2d").putImageData(p.imageData, 0, 0);
   cx.drawImage(tmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
-  return await new Promise(res => c.toBlob(res, "image/png"));
-}
-async function ocrMarker(marker) {
-  if (!state.ocrReady) {
-    marker.ocrText = "(OCR 尚未載入)"; return;
-  }
-  const blob = await cropToBlob(marker);
-  if (!blob) return;
+  preprocessForOcr(c);
   try {
-    const results = await state.ocrEngine.predict(blob);
-    const result = Array.isArray(results) ? results[0] : results;
-    const items = result && result.items ? result.items : [];
-    marker.ocrText = items.map(it => it.text).join(" ").trim() || "(無辨識結果)";
+    const { data } = await state.ocrEngine.recognize(c);
+    marker.ocrText = (data.text || "").trim().replace(/\s+/g," ") || "(無辨識結果)";
   } catch (err) {
     console.error(err);
-    marker.ocrText = "(OCR 失敗:" + (err.message || err) + ")";
+    marker.ocrText = "(OCR 失敗)";
   }
 }
 
