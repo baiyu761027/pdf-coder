@@ -535,23 +535,62 @@ function extractFromTextLayer(marker) {
   if (!p.textItems || p.textItems.length === 0) return null;
   const bx1 = marker.bx, by1 = marker.by;
   const bx2 = marker.bx + marker.bw, by2 = marker.by + marker.bh;
-  // 抓出至少有部份重疊在框內的文字
-  const hit = p.textItems.filter(t => {
-    // 計算重疊面積比 - 至少 30% 在框內才算
+
+  // 找出與框重疊的文字 (至少 30% 文字在框內)
+  const cands = [];
+  for (const t of p.textItems) {
     const ix1 = Math.max(t.left, bx1), iy1 = Math.max(t.top, by1);
     const ix2 = Math.min(t.right, bx2), iy2 = Math.min(t.bottom, by2);
-    if (ix1 >= ix2 || iy1 >= iy2) return false;
+    if (ix1 >= ix2 || iy1 >= iy2) continue;
     const overlap = (ix2-ix1) * (iy2-iy1);
     const area = Math.max(1, (t.right-t.left) * (t.bottom-t.top));
-    return overlap / area > 0.3;
+    const ratio = overlap / area;
+    if (ratio > 0.3) cands.push({ t, overlap, ratio });
+  }
+  if (cands.length === 0) return null;
+
+  // 計分: 偏好「真的尺寸文字」(有小數點/±/TYP)
+  // 忽略單獨的「0/1/2/3」這類格線標籤
+  function score(s) {
+    let v = 0;
+    if (/±/.test(s)) v += 100;
+    if (/\d\.\d/.test(s)) v += 50;        // 有小數點
+    if (/TYP|REF|MAX|MIN/i.test(s)) v += 30;
+    if (/Ø|⌀/.test(s)) v += 30;
+    // 一個 chunk 有幾位數字: 越多分越高
+    const digits = (s.match(/\d/g) || []).length;
+    v += digits * 2;
+    // 罰: 太短的純整數 (像 "0", "1", "10") 多半是格線標籤
+    if (s.length <= 2 && /^\d+$/.test(s)) v -= 20;
+    if (s.length === 1 && /^[a-zA-Z]$/.test(s)) v -= 30;  // 單一字母 (A,B,C...)
+    return v;
+  }
+  cands.forEach(c => { c.score = score(c.t.str); });
+
+  // 抓最高分當主體
+  cands.sort((a,b) => b.score - a.score);
+  const best = cands[0];
+  if (best.score < 10) {
+    // 沒有任何「像尺寸」的東西 → 拒絕回傳
+    return null;
+  }
+
+  // 找跟 best 同一行 (top 差距 < 字高) 且左右距離近的其他片段一起串
+  const lineHeight = Math.max(8, best.t.bottom - best.t.top);
+  const sameLine = cands.filter(c => {
+    if (c === best) return false;
+    if (Math.abs(c.t.top - best.t.top) > lineHeight) return false;
+    // 必須是同一行的延伸 (±0.025 之類的 trailing fragment)
+    const horizGap = Math.min(
+      Math.abs(c.t.left - best.t.right),
+      Math.abs(c.t.right - best.t.left)
+    );
+    return horizGap < lineHeight * 2 && c.score >= 5;
   });
-  if (hit.length === 0) return null;
-  // 由上到下、由左到右排序，再串接
-  hit.sort((a,b) => {
-    if (Math.abs(a.top - b.top) > 4) return a.top - b.top;
-    return a.left - b.left;
-  });
-  return hit.map(t => t.str).join(" ").replace(/\s+/g," ").trim();
+
+  const all = [best, ...sameLine];
+  all.sort((a,b) => a.t.left - b.t.left);
+  return all.map(c => c.t.str).join("").replace(/\s+/g," ").trim();
 }
 
 async function ocrMarker(marker) {
