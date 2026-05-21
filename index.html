@@ -169,7 +169,7 @@
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
 <script type="module">
-import { createOCREngine } from 'https://unpkg.com/client-side-ocr@latest/dist/index.mjs';
+import { PaddleOCR } from 'https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.3.2/+esm';
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -187,18 +187,18 @@ const canvas = $("pdfCanvas"), ctx = canvas.getContext("2d");
 async function initOcr() {
   const s = $("ocrStatus");
   try {
-    s.textContent = "下載 PaddleOCR 模型中...(15MB)";
-    state.ocrEngine = createOCREngine({
-      language: 'en',
-      modelVersion: 'PP-OCRv4'
+    s.textContent = "下載 PaddleOCR 引擎中...(約25MB)";
+    state.ocrEngine = await PaddleOCR.create({
+      lang: "en",
+      ocrVersion: "PP-OCRv4",
+      ortOptions: { backend: "wasm" }
     });
-    await state.ocrEngine.initialize();
     state.ocrReady = true;
     s.className = "ocr-status ready";
     s.textContent = "✓ PaddleOCR 就緒";
   } catch (e) {
     s.className = "ocr-status error";
-    s.textContent = "OCR 載入失敗: " + e.message;
+    s.textContent = "OCR 載入失敗: " + (e.message || e);
     console.error(e);
   }
 }
@@ -393,12 +393,13 @@ async function ocrMarker(marker) {
   const blob = await cropToBlob(marker);
   if (!blob) return;
   try {
-    const file = new File([blob], "crop.png", {type:"image/png"});
-    const result = await state.ocrEngine.processImage(file);
-    marker.ocrText = (result.text || "").trim().replace(/\s+/g," ");
+    const results = await state.ocrEngine.predict(blob);
+    const result = Array.isArray(results) ? results[0] : results;
+    const items = result && result.items ? result.items : [];
+    marker.ocrText = items.map(it => it.text).join(" ").trim() || "(無辨識結果)";
   } catch (err) {
     console.error(err);
-    marker.ocrText = "(OCR 失敗)";
+    marker.ocrText = "(OCR 失敗:" + (err.message || err) + ")";
   }
 }
 
