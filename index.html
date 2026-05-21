@@ -304,15 +304,49 @@ $("fileInput").onchange = async e => {
 async function loadPdf(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  let totalTextItems = 0;
   for (let i = 1; i <= pdf.numPages; i++) {
-    setProgress(`渲染第 ${i}/${pdf.numPages} 頁`, (i-1)/pdf.numPages*100);
+    setProgress(`處理第 ${i}/${pdf.numPages} 頁`, (i-1)/pdf.numPages*100);
     const page = await pdf.getPage(i);
     const vp = page.getViewport({scale:2.0});
     const c = document.createElement("canvas");
     c.width = vp.width; c.height = vp.height;
     await page.render({canvasContext:c.getContext("2d"), viewport:vp}).promise;
-    state.pages.push({width:c.width, height:c.height,
-      imageData:c.getContext("2d").getImageData(0,0,c.width,c.height)});
+
+    // ★ 抽取嵌入文字 (CAD 出的 PDF 通常都有)
+    let textItems = [];
+    try {
+      const tc = await page.getTextContent();
+      for (const it of tc.items) {
+        if (!it.str || !it.str.trim()) continue;
+        // 把 PDF 座標經 viewport 轉到 canvas 座標
+        const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
+        const fontH = Math.hypot(tx[2], tx[3]) || Math.abs(tx[3]) || 12;
+        const left = tx[4];
+        const bottom = tx[5];
+        const top = bottom - fontH;
+        const right = left + (it.width || 1) * vp.scale;
+        textItems.push({
+          str: it.str,
+          left, top, right, bottom,
+          // for vertical text detection
+          isVertical: Math.abs(tx[1]) > Math.abs(tx[0])
+        });
+      }
+    } catch(e) { console.warn("text extract failed:", e); }
+    totalTextItems += textItems.length;
+
+    state.pages.push({
+      width: c.width, height: c.height,
+      imageData: c.getContext("2d").getImageData(0,0,c.width,c.height),
+      textItems
+    });
+  }
+  // 提示使用者: 有嵌入文字 (直接抽) vs 純圖 (要 OCR)
+  if (totalTextItems > 0) {
+    const s = $("ocrStatus");
+    s.className = "ocr-status ready";
+    s.textContent = `✓ PDF 含 ${totalTextItems} 個嵌入文字 → 直接抽取 (100% 準確!)`;
   }
 }
 function loadImage(file) {
@@ -323,7 +357,8 @@ function loadImage(file) {
       c.width = img.naturalWidth; c.height = img.naturalHeight;
       c.getContext("2d").drawImage(img, 0, 0);
       state.pages.push({width:c.width, height:c.height,
-        imageData:c.getContext("2d").getImageData(0,0,c.width,c.height)});
+        imageData:c.getContext("2d").getImageData(0,0,c.width,c.height),
+        textItems: []});
       res();
     };
     img.onerror = rej;
@@ -494,7 +529,39 @@ function makeOcrCanvas(marker, mode) {
   return c;
 }
 
+// 先試從 PDF 嵌入文字撈 (100% 準確)，撈不到才退回 OCR
+function extractFromTextLayer(marker) {
+  const p = state.pages[marker.page];
+  if (!p.textItems || p.textItems.length === 0) return null;
+  const bx1 = marker.bx, by1 = marker.by;
+  const bx2 = marker.bx + marker.bw, by2 = marker.by + marker.bh;
+  // 抓出至少有部份重疊在框內的文字
+  const hit = p.textItems.filter(t => {
+    // 計算重疊面積比 - 至少 30% 在框內才算
+    const ix1 = Math.max(t.left, bx1), iy1 = Math.max(t.top, by1);
+    const ix2 = Math.min(t.right, bx2), iy2 = Math.min(t.bottom, by2);
+    if (ix1 >= ix2 || iy1 >= iy2) return false;
+    const overlap = (ix2-ix1) * (iy2-iy1);
+    const area = Math.max(1, (t.right-t.left) * (t.bottom-t.top));
+    return overlap / area > 0.3;
+  });
+  if (hit.length === 0) return null;
+  // 由上到下、由左到右排序，再串接
+  hit.sort((a,b) => {
+    if (Math.abs(a.top - b.top) > 4) return a.top - b.top;
+    return a.left - b.left;
+  });
+  return hit.map(t => t.str).join(" ").replace(/\s+/g," ").trim();
+}
+
 async function ocrMarker(marker) {
+  // ★ 第一優先: PDF 嵌入文字直接抽
+  const direct = extractFromTextLayer(marker);
+  if (direct) {
+    marker.ocrText = direct;  // 不需後處理，本身就是正確文字
+    return;
+  }
+  // 第二優先: OCR (圖檔 / 掃描 PDF)
   if (!state.ocrReady) {
     marker.ocrText = "(OCR 尚未載入)"; return;
   }
@@ -502,7 +569,6 @@ async function ocrMarker(marker) {
   const cSharp = makeOcrCanvas(marker, "sharpen");
   const cRaw = makeOcrCanvas(marker, "raw");
   if (!cBin || !cRaw) return;
-  // 只用 PSM 7 (單行) 跟 6 (block) — 避免雜訊
   const psms = ["7", "6"];
   const variants = [cSharp, cBin, cRaw];
   for (const psm of psms) {
@@ -511,7 +577,6 @@ async function ocrMarker(marker) {
         await state.ocrEngine.setParameters({ tessedit_pageseg_mode: psm });
         const { data } = await state.ocrEngine.recognize(cv);
         let txt = (data.text || "").trim().replace(/\s+/g," ");
-        // 雜訊濾除: 結果必須含至少一個數字
         if (txt && /\d/.test(txt)) {
           marker.ocrText = postProcessOcr(txt);
           return;
