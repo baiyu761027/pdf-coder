@@ -92,7 +92,7 @@
   <aside>
     <div class="section">
       <div class="section-title">OCR 狀態</div>
-      <div class="ocr-status loading" id="ocrStatus">Tesseract OCR 載入中...(首次需網路下載約10MB)</div>
+      <div class="ocr-status loading" id="ocrStatus">Tesseract eng_best 載入中...(首次下載 22MB)</div>
     </div>
 
     <div class="section">
@@ -187,24 +187,26 @@ const canvas = $("pdfCanvas"), ctx = canvas.getContext("2d");
 async function initOcr() {
   const s = $("ocrStatus");
   try {
-    s.textContent = "下載 Tesseract 模型 (約 10MB)...";
+    s.textContent = "下載 Tesseract eng_best 高精度模型 (約 22MB)...";
     state.ocrEngine = await Tesseract.createWorker("eng", 1, {
+      // eng_best = LSTM 高精度模型 (準確率高 / 較慢 / 較大)
+      langPath: "https://tessdata.projectnaptha.com/4.0.0_best",
       logger: m => {
         if (m.status === "downloading tesseract core") s.textContent = "下載 OCR 引擎...";
         else if (m.status === "loading tesseract core") s.textContent = "初始化 OCR 引擎...";
-        else if (m.status === "downloading language traineddata") s.textContent = `下載語言模型 ${Math.round(m.progress*100)}%`;
+        else if (m.status === "downloading language traineddata") s.textContent = `下載高精度模型 ${Math.round(m.progress*100)}%`;
         else if (m.status === "initializing api") s.textContent = "啟動 API...";
       }
     });
     try {
-      // 字元白名單只設一次；PSM 每次 OCR 動態調
+      // 嚴格白名單：只允許數字+技術符號 (移除多餘字母避免誤判)
       await state.ocrEngine.setParameters({
-        tessedit_char_whitelist: "0123456789.,±+-ØMINAXREFTYPmaxminreftypO×x °()/| "
+        tessedit_char_whitelist: "0123456789.,±+-Ø °/"
       });
     } catch(_) {}
     state.ocrReady = true;
     s.className = "ocr-status ready";
-    s.textContent = "✓ Tesseract OCR 就緒";
+    s.textContent = "✓ Tesseract eng_best 就緒 (高精度)";
   } catch (e) {
     s.className = "ocr-status error";
     s.textContent = "OCR 載入失敗: " + (e.message || e);
@@ -375,7 +377,7 @@ canvas.addEventListener("mouseup", async e => {
 });
 
 // ---- OCR ----
-// Otsu 二值化前處理 — 大幅提升技術圖小字辨識率
+// Otsu 二值化前處理
 function preprocessForOcr(c) {
   const w = c.width, h = c.height;
   const cx = c.getContext("2d");
@@ -406,6 +408,30 @@ function preprocessForOcr(c) {
     d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
   }
   cx.putImageData(img, 0, 0);
+}
+
+// Laplacian 銳化濾鏡 - 強化細字邊緣
+function sharpenCanvas(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const cx = canvas.getContext("2d");
+  const src = cx.getImageData(0, 0, w, h);
+  const dst = cx.createImageData(w, h);
+  const sd = src.data, dd = dst.data;
+  // 5-tap sharpen kernel: center +5, neighbors -1
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const c = i + ch;
+        const v = 5 * sd[c]
+          - sd[c - 4] - sd[c + 4]
+          - sd[c - w*4] - sd[c + w*4];
+        dd[c] = Math.max(0, Math.min(255, v));
+      }
+      dd[i+3] = 255;
+    }
+  }
+  cx.putImageData(dst, 0, 0);
 }
 
 // 後處理: Tesseract 看不懂 ±/Ø 符號, 用上下文還原
@@ -444,14 +470,16 @@ function postProcessOcr(text) {
 }
 
 // 把 marker 範圍裁成兩種版本 (二值化、原圖) 給 OCR 試
-function makeOcrCanvas(marker, binarize) {
+function makeOcrCanvas(marker, mode) {
+  // mode: "binarize" | "sharpen" | "raw"
   const p = state.pages[marker.page];
   const sx = Math.max(0, Math.round(marker.bx));
   const sy = Math.max(0, Math.round(marker.by));
   const sw = Math.min(p.width-sx, Math.round(marker.bw));
   const sh = Math.min(p.height-sy, Math.round(marker.bh));
   if (sw < 3 || sh < 3) return null;
-  const scale = 3;
+  // 4x 升頻 - 小字也能讀
+  const scale = 4;
   const c = document.createElement("canvas");
   c.width = sw * scale; c.height = sh * scale;
   const cx = c.getContext("2d");
@@ -461,7 +489,8 @@ function makeOcrCanvas(marker, binarize) {
   tmp.width = p.width; tmp.height = p.height;
   tmp.getContext("2d").putImageData(p.imageData, 0, 0);
   cx.drawImage(tmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
-  if (binarize) preprocessForOcr(c);
+  if (mode === "binarize") preprocessForOcr(c);
+  else if (mode === "sharpen") { sharpenCanvas(c); preprocessForOcr(c); }
   return c;
 }
 
@@ -469,26 +498,28 @@ async function ocrMarker(marker) {
   if (!state.ocrReady) {
     marker.ocrText = "(OCR 尚未載入)"; return;
   }
-  const cBin = makeOcrCanvas(marker, true);
-  const cRaw = makeOcrCanvas(marker, false);
+  const cBin = makeOcrCanvas(marker, "binarize");
+  const cSharp = makeOcrCanvas(marker, "sharpen");
+  const cRaw = makeOcrCanvas(marker, "raw");
   if (!cBin || !cRaw) return;
-  // 多種 PSM 模式試 (7=單行, 6=block, 11=sparse, 13=raw single line)
-  // 每種模式用 binarized 跟 raw 各跑一次，挑出第一個非空結果
-  const psms = ["7", "6", "11", "13"];
+  // 只用 PSM 7 (單行) 跟 6 (block) — 避免雜訊
+  const psms = ["7", "6"];
+  const variants = [cSharp, cBin, cRaw];
   for (const psm of psms) {
-    for (const cv of [cBin, cRaw]) {
+    for (const cv of variants) {
       try {
         await state.ocrEngine.setParameters({ tessedit_pageseg_mode: psm });
         const { data } = await state.ocrEngine.recognize(cv);
         let txt = (data.text || "").trim().replace(/\s+/g," ");
-        if (txt && txt.length >= 1) {
+        // 雜訊濾除: 結果必須含至少一個數字
+        if (txt && /\d/.test(txt)) {
           marker.ocrText = postProcessOcr(txt);
           return;
         }
       } catch(e) {}
     }
   }
-  marker.ocrText = "(無辨識結果 - 框大一點再試或直接打字)";
+  marker.ocrText = "(無辨識 - 框緊一點或直接打字)";
 }
 
 // ---- Marker ops ----
