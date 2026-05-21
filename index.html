@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>PDF / 圖檔框選編碼工具 (PaddleOCR 瀏覽器版)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+  :root{--bg:#f5f6f8;--panel:#fff;--border:#e3e5e8;--text:#1f2328;--muted:#6a737d;
+    --accent:#2563eb;--accent-light:#dbeafe;--danger:#dc2626;--warn:#d97706;
+    --shadow:0 1px 3px rgba(0,0,0,0.08);}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,"Microsoft JhengHei",sans-serif;
+    background:var(--bg);color:var(--text);height:100vh;overflow:hidden;}
+  .app{display:grid;grid-template-columns:320px 1fr;grid-template-rows:56px 1fr;height:100vh;}
+  header{grid-column:1/-1;background:var(--panel);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;padding:0 20px;box-shadow:var(--shadow);gap:16px;}
+  header h1{margin:0;font-size:15px;font-weight:600;}
+  header .status{margin-left:auto;font-size:12px;color:var(--muted);}
+  aside{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:14px;}
+  main{overflow:auto;padding:16px;background:#e7e9ec;}
+  .section{margin-bottom:16px;}
+  .section-title{font-size:11px;font-weight:600;color:var(--muted);
+    text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    padding:8px 12px;border:1px solid var(--border);background:#fff;border-radius:6px;
+    font-size:13px;cursor:pointer;color:var(--text);width:100%;margin-bottom:4px;}
+  .btn:hover{background:#f5f6f8;}
+  .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .btn.primary:hover{background:#1d4ed8;}
+  .btn.danger{color:var(--danger);border-color:#fecaca;}
+  .btn.danger:hover{background:#fef2f2;}
+  .btn.warn{color:var(--warn);border-color:#fed7aa;}
+  .btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .letter-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+  .letter-btn{padding:8px 0;border:1px solid var(--border);background:#fff;
+    border-radius:6px;font-weight:600;cursor:pointer;font-size:13px;}
+  .letter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .next-code{background:var(--accent-light);border:1px solid #93c5fd;color:#1e40af;
+    padding:10px;border-radius:6px;font-size:16px;font-weight:700;
+    text-align:center;margin-bottom:8px;}
+  .file-input{position:relative;}
+  .file-input input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;}
+  .marker-list{max-height:300px;overflow-y:auto;border:1px solid var(--border);
+    border-radius:6px;background:#fafbfc;font-size:12px;}
+  .marker-item{padding:5px 8px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:4px;}
+  .marker-item:last-child{border-bottom:none;}
+  .marker-item .code{font-weight:700;color:var(--accent);min-width:36px;}
+  .marker-item .ocr-edit{flex:1;padding:3px 5px;border:1px solid var(--border);
+    border-radius:4px;font-size:12px;min-width:0;width:100%;
+    font-family:ui-monospace,Consolas,monospace;}
+  .marker-item .ocr-edit:focus{outline:2px solid #93c5fd;border-color:var(--accent);}
+  .marker-item .del{background:none;border:none;color:var(--danger);cursor:pointer;
+    font-size:14px;padding:0 4px;}
+  .page-nav{display:flex;gap:6px;align-items:center;justify-content:center;
+    margin-bottom:10px;background:var(--panel);padding:6px;border-radius:6px;
+    border:1px solid var(--border);}
+  .page-nav button{padding:4px 10px;border:1px solid var(--border);background:#fff;
+    border-radius:4px;cursor:pointer;font-size:12px;}
+  .page-nav button:disabled{opacity:0.5;cursor:not-allowed;}
+  .canvas-wrapper{background:var(--panel);border:1px solid var(--border);
+    border-radius:6px;padding:10px;display:inline-block;box-shadow:var(--shadow);}
+  #pdfCanvas{cursor:crosshair;max-width:100%;display:block;}
+  .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    height:80%;color:var(--muted);text-align:center;}
+  .progress-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:none;
+    align-items:center;justify-content:center;z-index:100;}
+  .progress-box{background:#fff;padding:20px 28px;border-radius:8px;min-width:320px;text-align:center;}
+  .progress-bar{height:8px;background:var(--border);border-radius:4px;
+    overflow:hidden;margin-top:10px;}
+  .progress-fill{height:100%;background:var(--accent);transition:width 0.2s;}
+  .small{font-size:11px;color:var(--muted);}
+  .hint{background:#fef3c7;border:1px solid #fde68a;color:#92400e;
+    padding:8px;border-radius:6px;font-size:11px;margin-bottom:8px;line-height:1.5;}
+  .ocr-status{padding:6px 8px;border-radius:4px;font-size:11px;margin-bottom:6px;}
+  .ocr-status.loading{background:#fef3c7;color:#92400e;}
+  .ocr-status.ready{background:#dcfce7;color:#15803d;}
+  .ocr-status.error{background:#fee2e2;color:#991b1b;}
+  input[type=number]{padding:5px 7px;border:1px solid var(--border);
+    border-radius:4px;width:80px;font-size:12px;}
+  label.field{display:flex;align-items:center;justify-content:space-between;
+    font-size:12px;margin-bottom:5px;color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>PDF / 圖檔框選編碼工具 — PaddleOCR 瀏覽器版</h1>
+    <div class="status" id="statusBar">尚未載入檔案</div>
+  </header>
+
+  <aside>
+    <div class="section">
+      <div class="section-title">OCR 狀態</div>
+      <div class="ocr-status loading" id="ocrStatus">PaddleOCR 載入中...(首次需網路下載約15MB)</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">1. 上傳檔案</div>
+      <button class="btn primary file-input">選擇 PDF 或圖片
+        <input type="file" id="fileInput" accept="application/pdf,image/*" />
+      </button>
+      <div class="small" id="fileInfo">支援 PDF / PNG / JPG</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">2. 下一個編碼</div>
+      <div class="next-code" id="nextCode">A1</div>
+      <div class="section-title" style="margin-top:6px;">選字母 (A~G)</div>
+      <div class="letter-grid" id="letterGrid"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">3. 框選 + OCR</div>
+      <div class="hint">
+        <b>在圖上拖曳出矩形</b>框住尺寸文字，放開後自動辨識。
+        結果列在下方可直接修改。
+      </div>
+      <button class="btn warn" id="undoBtn">↶ 還原上一個</button>
+      <button class="btn danger" id="clearBtn">清除全部</button>
+      <button class="btn" id="rerunOcrBtn">🔄 重新 OCR 全部</button>
+      <label class="field">預設公差 (±)
+        <input type="number" id="defaultTol" value="0.05" min="0" max="10" step="0.001" />
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">4. 匯出</div>
+      <button class="btn" id="exportCsv">⬇ CSV (座標)</button>
+      <button class="btn" id="exportXlsx">⬇ Excel 量測表</button>
+      <button class="btn" id="exportPdf">⬇ 標注 PDF</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">已標注編碼 (可修改 OCR)</div>
+      <div class="marker-list" id="markerList"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="emptyState" class="empty-state">
+      <div style="font-size:48px;opacity:0.3;margin-bottom:12px;">📄</div>
+      <div>從左側上傳 PDF 或圖片開始</div>
+      <div class="small" style="margin-top:8px;">在圖上拖曳矩形框住尺寸文字</div>
+    </div>
+    <div id="viewer" style="display:none;">
+      <div class="page-nav" id="pageNav" style="display:none;">
+        <button id="prevPage">← 上一頁</button>
+        <span id="pageInfo">1/1</span>
+        <button id="nextPage">下一頁 →</button>
+      </div>
+      <div class="canvas-wrapper">
+        <canvas id="pdfCanvas"></canvas>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="progress-overlay" id="progressOverlay">
+  <div class="progress-box">
+    <div id="progressTitle">處理中…</div>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+    <div class="small" id="progressText" style="margin-top:8px;">準備中</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+<script type="module">
+import { createOCREngine } from 'https://unpkg.com/client-side-ocr@latest/dist/index.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const state = {
+  fileName: null, pages: [], currentPage: 0,
+  currentLetter: "A", counters: {A:0,B:0,C:0,D:0,E:0,F:0,G:0},
+  markers: [], nextId: 1, displayScale: 1.0,
+  ocrEngine: null, ocrReady: false,
+};
+const LETTERS = ["A","B","C","D","E","F","G"];
+const $ = (id) => document.getElementById(id);
+const canvas = $("pdfCanvas"), ctx = canvas.getContext("2d");
+
+// ---- OCR init ----
+async function initOcr() {
+  const s = $("ocrStatus");
+  try {
+    s.textContent = "下載 PaddleOCR 模型中...(15MB)";
+    state.ocrEngine = createOCREngine({
+      language: 'en',
+      modelVersion: 'PP-OCRv4'
+    });
+    await state.ocrEngine.initialize();
+    state.ocrReady = true;
+    s.className = "ocr-status ready";
+    s.textContent = "✓ PaddleOCR 就緒";
+  } catch (e) {
+    s.className = "ocr-status error";
+    s.textContent = "OCR 載入失敗: " + e.message;
+    console.error(e);
+  }
+}
+initOcr();
+
+// ---- UI helpers ----
+function nextCode() { return state.currentLetter + (state.counters[state.currentLetter]+1); }
+function updateNextCode() { $("nextCode").textContent = nextCode(); }
+function buildLetterButtons() {
+  const lg = $("letterGrid"); lg.innerHTML = "";
+  LETTERS.forEach(L => {
+    const b = document.createElement("button");
+    b.className = "letter-btn" + (L === state.currentLetter ? " active" : "");
+    b.textContent = L;
+    b.onclick = () => { state.currentLetter = L; buildLetterButtons(); updateNextCode(); };
+    lg.appendChild(b);
+  });
+}
+function updateStatus() {
+  $("statusBar").textContent = state.fileName
+    ? `${state.fileName} ・ ${state.pages.length}頁 ・ 已標${state.markers.length}個`
+    : "尚未載入檔案";
+}
+function updateMarkerList() {
+  const ml = $("markerList"); ml.innerHTML = "";
+  if (state.markers.length === 0) {
+    ml.innerHTML = '<div style="padding:10px;color:#9ca3af;text-align:center;">尚無編碼</div>';
+    return;
+  }
+  state.markers.forEach(m => {
+    const row = document.createElement("div");
+    row.className = "marker-item";
+    const txt = (m.ocrText==null ? "" : m.ocrText).replace(/"/g,"&quot;");
+    row.innerHTML = `<span class="code">${m.code}</span>
+      <input class="ocr-edit" type="text" value="${txt}" placeholder="OCR中..." />
+      <button class="del">×</button>`;
+    row.querySelector(".del").onclick = () => removeMarker(m.id);
+    row.querySelector(".ocr-edit").oninput = e => { m.ocrText = e.target.value; };
+    ml.appendChild(row);
+  });
+}
+
+// ---- Rendering ----
+function renderPage(idx) {
+  if (!state.pages[idx]) return;
+  const p = state.pages[idx];
+  canvas.width = p.width; canvas.height = p.height;
+  ctx.putImageData(p.imageData, 0, 0);
+  state.markers.filter(m => m.page === idx).forEach(m => drawMarker(ctx, m));
+  const n = state.pages.length;
+  if (n > 1) {
+    $("pageNav").style.display = "flex";
+    $("pageInfo").textContent = `${idx+1}/${n}`;
+    $("prevPage").disabled = idx === 0;
+    $("nextPage").disabled = idx === n-1;
+  } else {
+    $("pageNav").style.display = "none";
+  }
+}
+function drawMarker(cx, m) {
+  cx.save();
+  cx.lineWidth = 2;
+  cx.strokeStyle = "#dc2626";
+  cx.strokeRect(m.bx, m.by, m.bw, m.bh);
+  cx.fillStyle = "rgba(220,38,38,0.10)";
+  cx.fillRect(m.bx, m.by, m.bw, m.bh);
+  cx.font = "bold 14px sans-serif";
+  const w = cx.measureText(m.code).width + 10, h = 20;
+  cx.fillStyle = "#dc2626"; cx.fillRect(m.bx, m.by - h, w, h);
+  cx.fillStyle = "#fff"; cx.fillText(m.code, m.bx + 5, m.by - 5);
+  cx.restore();
+}
+
+// ---- File load ----
+$("fileInput").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  state.fileName = f.name; state.pages = []; state.markers = [];
+  state.counters = {A:0,B:0,C:0,D:0,E:0,F:0,G:0}; state.currentPage = 0;
+  $("fileInfo").textContent = f.name;
+  showProgress("載入中...", 0);
+  try {
+    if (f.type === "application/pdf") await loadPdf(f);
+    else if (f.type.startsWith("image/")) await loadImage(f);
+    else { alert("不支援的格式"); hideProgress(); return; }
+    $("emptyState").style.display = "none";
+    $("viewer").style.display = "block";
+    renderPage(0);
+    updateStatus(); updateMarkerList(); updateNextCode();
+  } catch (err) { console.error(err); alert("失敗: "+err.message); }
+  hideProgress();
+};
+async function loadPdf(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  for (let i = 1; i <= pdf.numPages; i++) {
+    setProgress(`渲染第 ${i}/${pdf.numPages} 頁`, (i-1)/pdf.numPages*100);
+    const page = await pdf.getPage(i);
+    const vp = page.getViewport({scale:2.0});
+    const c = document.createElement("canvas");
+    c.width = vp.width; c.height = vp.height;
+    await page.render({canvasContext:c.getContext("2d"), viewport:vp}).promise;
+    state.pages.push({width:c.width, height:c.height,
+      imageData:c.getContext("2d").getImageData(0,0,c.width,c.height)});
+  }
+}
+function loadImage(file) {
+  return new Promise((res,rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext("2d").drawImage(img, 0, 0);
+      state.pages.push({width:c.width, height:c.height,
+        imageData:c.getContext("2d").getImageData(0,0,c.width,c.height)});
+      res();
+    };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// ---- Box-select drag ----
+let dragStart = null;
+function canvasCoord(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (canvas.width / rect.width),
+    y: (e.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+canvas.addEventListener("mousedown", e => {
+  if (state.pages.length === 0) return;
+  dragStart = canvasCoord(e);
+});
+canvas.addEventListener("mousemove", e => {
+  if (!dragStart) return;
+  const cur = canvasCoord(e);
+  renderPage(state.currentPage);
+  ctx.save();
+  ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 2;
+  ctx.setLineDash([6,4]);
+  ctx.strokeRect(dragStart.x, dragStart.y, cur.x-dragStart.x, cur.y-dragStart.y);
+  ctx.restore();
+});
+canvas.addEventListener("mouseup", async e => {
+  if (!dragStart) return;
+  const end = canvasCoord(e);
+  const bx = Math.min(dragStart.x, end.x), by = Math.min(dragStart.y, end.y);
+  const bw = Math.abs(end.x-dragStart.x), bh = Math.abs(end.y-dragStart.y);
+  dragStart = null;
+  if (bw < 5 || bh < 5) { renderPage(state.currentPage); return; }
+  const L = state.currentLetter;
+  state.counters[L]++;
+  const num = state.counters[L];
+  const marker = {
+    id: state.nextId++, code: L+num, letter:L, number:num,
+    page: state.currentPage, bx, by, bw, bh, ocrText: null,
+  };
+  state.markers.push(marker);
+  renderPage(state.currentPage);
+  updateNextCode(); updateStatus(); updateMarkerList();
+  // Run OCR
+  await ocrMarker(marker);
+  updateMarkerList();
+});
+
+// ---- OCR ----
+async function cropToBlob(marker) {
+  const p = state.pages[marker.page];
+  const sx = Math.max(0, Math.round(marker.bx));
+  const sy = Math.max(0, Math.round(marker.by));
+  const sw = Math.min(p.width-sx, Math.round(marker.bw));
+  const sh = Math.min(p.height-sy, Math.round(marker.bh));
+  if (sw < 3 || sh < 3) return null;
+  // Scale up 2x for better OCR
+  const scale = 2;
+  const c = document.createElement("canvas");
+  c.width = sw * scale; c.height = sh * scale;
+  const cx = c.getContext("2d");
+  cx.imageSmoothingEnabled = true;
+  cx.imageSmoothingQuality = "high";
+  const tmp = document.createElement("canvas");
+  tmp.width = p.width; tmp.height = p.height;
+  tmp.getContext("2d").putImageData(p.imageData, 0, 0);
+  cx.drawImage(tmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return await new Promise(res => c.toBlob(res, "image/png"));
+}
+async function ocrMarker(marker) {
+  if (!state.ocrReady) {
+    marker.ocrText = "(OCR 尚未載入)"; return;
+  }
+  const blob = await cropToBlob(marker);
+  if (!blob) return;
+  try {
+    const file = new File([blob], "crop.png", {type:"image/png"});
+    const result = await state.ocrEngine.processImage(file);
+    marker.ocrText = (result.text || "").trim().replace(/\s+/g," ");
+  } catch (err) {
+    console.error(err);
+    marker.ocrText = "(OCR 失敗)";
+  }
+}
+
+// ---- Marker ops ----
+function removeMarker(id) {
+  const idx = state.markers.findIndex(m => m.id===id);
+  if (idx < 0) return;
+  const m = state.markers[idx];
+  state.markers.splice(idx, 1);
+  const same = state.markers.filter(x => x.letter===m.letter);
+  state.counters[m.letter] = same.length === 0 ? 0 : Math.max(...same.map(x=>x.number));
+  renderPage(state.currentPage);
+  updateNextCode(); updateStatus(); updateMarkerList();
+}
+$("undoBtn").onclick = () => {
+  if (state.markers.length === 0) return;
+  const last = state.markers.pop();
+  if (state.counters[last.letter] === last.number) state.counters[last.letter]--;
+  renderPage(state.currentPage);
+  updateNextCode(); updateStatus(); updateMarkerList();
+};
+$("clearBtn").onclick = () => {
+  if (state.markers.length === 0) return;
+  if (!confirm("清除所有編碼?")) return;
+  state.markers = []; state.counters = {A:0,B:0,C:0,D:0,E:0,F:0,G:0};
+  renderPage(state.currentPage);
+  updateNextCode(); updateStatus(); updateMarkerList();
+};
+$("rerunOcrBtn").onclick = async () => {
+  if (state.markers.length === 0 || !state.ocrReady) return;
+  showProgress("批次 OCR 中...", 0);
+  for (let i = 0; i < state.markers.length; i++) {
+    setProgress(`${state.markers[i].code} (${i+1}/${state.markers.length})`,
+                i/state.markers.length*100);
+    await ocrMarker(state.markers[i]);
+    updateMarkerList();
+  }
+  hideProgress();
+};
+$("prevPage").onclick = () => { if (state.currentPage>0) { state.currentPage--; renderPage(state.currentPage);} };
+$("nextPage").onclick = () => { if (state.currentPage<state.pages.length-1) { state.currentPage++; renderPage(state.currentPage);} };
+
+// ---- Progress ----
+function showProgress(t, p) { $("progressTitle").textContent=t; $("progressFill").style.width=p+"%"; $("progressText").textContent=""; $("progressOverlay").style.display="flex"; }
+function setProgress(t, p) { $("progressText").textContent=t; $("progressFill").style.width=p+"%"; }
+function hideProgress() { $("progressOverlay").style.display="none"; }
+
+// ---- Tolerance parser ----
+function parseDimension(raw, dt) {
+  const out = {raw:raw||"", display:"", nominal:null, tolerance:dt, tolExplicit:false};
+  if (!raw) return out;
+  let s = raw.replace(/[土士＋]/g,"±").replace(/\+\/-|\+\s*-/g,"±")
+    .replace(/[‧·．。]/g,".").replace(/[，、]/g," ")
+    .replace(/[Ｏ⊘∅⌀]/g,"Ø").replace(/\s+/g," ").trim();
+  out.display = s;
+  let c = s;
+  for (const w of ["TYP","REF","MAX","MIN","Ø"]) c = c.replace(new RegExp(w+"\\.?","gi"),"");
+  c = c.replace(/\s+/g," ").trim();
+  let m = c.match(/(-?\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)/);
+  if (m) { out.nominal=parseFloat(m[1]); out.tolerance=parseFloat(m[2]); out.tolExplicit=true; return out; }
+  const nums = c.match(/-?\d+(?:\.\d+)?/g);
+  if (nums && nums.length>=2) {
+    const a=parseFloat(nums[0]), b=parseFloat(nums[1]);
+    if (b>0 && b<1 && b<Math.abs(a)) { out.nominal=a; out.tolerance=b; out.tolExplicit=true; return out; }
+  }
+  m = c.match(/(-?\d+\.\d{1,3})(0\.\d{2,3})(?!\d)/);
+  if (m) { out.nominal=parseFloat(m[1]); out.tolerance=parseFloat(m[2]); out.tolExplicit=true; return out; }
+  if (nums) out.nominal = parseFloat(nums[0]);
+  return out;
+}
+function fmtNum(n) { return n==null||isNaN(n) ? "" : parseFloat(n.toFixed(4)); }
+
+// ---- Exports ----
+$("exportCsv").onclick = () => {
+  if (!state.markers.length) { alert("無編碼"); return; }
+  const rows = [["編碼","字母","數字","頁碼","X1","Y1","X2","Y2","OCR"]];
+  state.markers.forEach(m => rows.push([m.code,m.letter,m.number,m.page+1,
+    Math.round(m.bx),Math.round(m.by),Math.round(m.bx+m.bw),Math.round(m.by+m.bh),
+    m.ocrText||""]));
+  const csv = "﻿" + rows.map(r => r.map(v => `"${v}"`).join(",")).join("\n");
+  download(new Blob([csv],{type:"text/csv;charset=utf-8"}), (state.fileName||"coding")+".csv");
+};
+$("exportXlsx").onclick = () => {
+  if (!state.markers.length) { alert("無編碼"); return; }
+  const dt = parseFloat($("defaultTol").value) || 0.05;
+  const byL = {}; state.markers.forEach(m => { (byL[m.letter] = byL[m.letter]||[]).push(m); });
+  Object.values(byL).forEach(arr => arr.sort((a,b) => a.number-b.number));
+  const rows = [["標示編碼","數據","上限","下限"]];
+  LETTERS.forEach(L => {
+    const arr = byL[L]; if (!arr) return;
+    rows.push([`頁 ${L}  共 ${arr.length} 個尺寸`,null,null,null]);
+    arr.forEach(m => {
+      const p = parseDimension(m.ocrText, dt);
+      const d = p.display || (m.ocrText||"");
+      if (p.nominal == null) rows.push([m.code, d, "", ""]);
+      else rows.push([m.code, d, fmtNum(p.nominal+p.tolerance), fmtNum(p.nominal-p.tolerance)]);
+    });
+    rows.push([null,null,null,null]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{wch:14},{wch:24},{wch:12},{wch:12}];
+  const ws2 = XLSX.utils.aoa_to_sheet([
+    ["編碼","字母","數字","頁碼","X1","Y1","X2","Y2","原始OCR","解析數據","解析公差","公差來源"],
+    ...state.markers.map(m => {
+      const p = parseDimension(m.ocrText, dt);
+      return [m.code,m.letter,m.number,m.page+1,
+        Math.round(m.bx),Math.round(m.by),Math.round(m.bx+m.bw),Math.round(m.by+m.bh),
+        m.ocrText||"", p.nominal, p.tolerance,
+        p.tolExplicit?"OCR偵測":"預設"];
+    })
+  ]);
+  ws2["!cols"] = [{wch:8},{wch:6},{wch:6},{wch:6},{wch:8},{wch:8},{wch:8},{wch:8},{wch:30},{wch:12},{wch:12},{wch:12}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "量測表");
+  XLSX.utils.book_append_sheet(wb, ws2, "原始資料");
+  XLSX.writeFile(wb, (state.fileName||"coding")+"_量測表.xlsx");
+};
+$("exportPdf").onclick = async () => {
+  if (!state.pages.length) { alert("尚未載入"); return; }
+  showProgress("產生標注 PDF...", 0);
+  const { jsPDF } = window.jspdf;
+  const first = state.pages[0];
+  const doc = new jsPDF({orientation:first.width>=first.height?"landscape":"portrait",
+    unit:"pt", format:[first.width,first.height]});
+  for (let i = 0; i < state.pages.length; i++) {
+    setProgress(`處理第${i+1}/${state.pages.length}頁`, i/state.pages.length*100);
+    const p = state.pages[i];
+    const c = document.createElement("canvas");
+    c.width = p.width; c.height = p.height;
+    const cx = c.getContext("2d");
+    cx.putImageData(p.imageData, 0, 0);
+    state.markers.filter(m => m.page===i).forEach(m => drawMarker(cx, m));
+    const url = c.toDataURL("image/jpeg", 0.92);
+    if (i > 0) doc.addPage([p.width,p.height], p.width>=p.height?"landscape":"portrait");
+    doc.addImage(url, "JPEG", 0, 0, p.width, p.height);
+  }
+  doc.save((state.fileName||"coding")+"_annotated.pdf");
+  hideProgress();
+};
+function download(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---- Init ----
+buildLetterButtons();
+updateNextCode();
+updateMarkerList();
+updateStatus();
+</script>
+</body>
+</html>
