@@ -579,13 +579,17 @@ function extractFromTextLayer(marker) {
   const lineHeight = Math.max(8, best.t.bottom - best.t.top);
   const sameLine = cands.filter(c => {
     if (c === best) return false;
-    if (Math.abs(c.t.top - best.t.top) > lineHeight) return false;
-    // 必須是同一行的延伸 (±0.025 之類的 trailing fragment)
+    // 基線必須非常接近 (同一行)
+    const baseDiff = Math.abs(c.t.bottom - best.t.bottom);
+    if (baseDiff > lineHeight * 0.5) return false;
+    // 必須有數字才算尺寸碎片
+    if (!/\d/.test(c.t.str)) return false;
+    // 水平要相鄰 (尺寸主體後緊接 ±0.0XX 那種)
     const horizGap = Math.min(
       Math.abs(c.t.left - best.t.right),
       Math.abs(c.t.right - best.t.left)
     );
-    return horizGap < lineHeight * 2 && c.score >= 5;
+    return horizGap < lineHeight * 1.5;
   });
 
   const all = [best, ...sameLine];
@@ -597,7 +601,13 @@ async function ocrMarker(marker) {
   // ★ 第一優先: PDF 嵌入文字直接抽
   const direct = extractFromTextLayer(marker);
   if (direct) {
-    marker.ocrText = direct;  // 不需後處理，本身就是正確文字
+    marker.ocrText = direct;
+    return;
+  }
+  // 若 PDF 有文字層但框內沒抓到合格尺寸 → 不跑 OCR (避免讀到雜訊)
+  const p = state.pages[marker.page];
+  if (p.textItems && p.textItems.length > 0) {
+    marker.ocrText = "(框內無有效尺寸 - 重框小一點/緊一點)";
     return;
   }
   // 第二優先: OCR (圖檔 / 掃描 PDF)
@@ -616,7 +626,9 @@ async function ocrMarker(marker) {
         await state.ocrEngine.setParameters({ tessedit_pageseg_mode: psm });
         const { data } = await state.ocrEngine.recognize(cv);
         let txt = (data.text || "").trim().replace(/\s+/g," ");
-        if (txt && /\d/.test(txt)) {
+        // 雜訊濾除: 至少要有 3 字元 + 數字 (或含小數/±/TYP)
+        if (txt && /\d/.test(txt) &&
+            (txt.length >= 3 || /[\.\u00b1]/.test(txt))) {
           marker.ocrText = postProcessOcr(txt);
           return;
         }
